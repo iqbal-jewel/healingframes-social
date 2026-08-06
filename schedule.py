@@ -20,10 +20,13 @@ Facebook and write/update queue.json + fb_state.json.
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
 import publish
+
+RATE_LIMIT_DELAY = 8  # seconds between FB scheduling calls, to stay under Meta's spam throttle
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NARRATION_PATH = os.path.join(HERE, "narration.json")
@@ -96,6 +99,7 @@ def main():
 
     min_time = now + timedelta(minutes=20)
     max_time = now + timedelta(days=29)
+    fb_rate_limited = False  # once True, skip further FB attempts this run but keep building the queue
 
     print(f"{'LIVE' if args.live else 'DRY RUN'} -- planning {len(nums)} day(s), "
           f"starting {start_date} at {args.time} {args.timezone}:")
@@ -119,26 +123,38 @@ def main():
 
         state = fb_state.get(str(num), {})
 
-        # Facebook feed -- schedule server-side, only once, only within window
-        # (these calls run locally, right now, so absolute paths are fine here;
-        # only the *stored* queue.json paths need to stay repo-relative for CI)
-        if in_window and state.get("fb_photo") != "scheduled" and image_path:
-            fb_photo_id = publish.schedule_facebook_photo(
-                page_id, page_token, os.path.join(HERE, image_path), caption,
-                scheduled_publish_time=int(image_time.timestamp()),
-            )
-            state["fb_photo"] = "scheduled"
-            state["fb_photo_id"] = fb_photo_id
-            print(f"    FB photo scheduled -- {fb_photo_id}")
+        # Facebook feed -- schedule server-side, only once, only within window.
+        # If Meta's spam throttle kicks in mid-run, stop attempting FB calls for
+        # the rest of *this* run (retry on the next run) but keep building the
+        # IG/Story queue below for every remaining day regardless -- that part
+        # never touches the FB API and isn't subject to this throttle.
+        if not fb_rate_limited and in_window and state.get("fb_photo") != "scheduled" and image_path:
+            try:
+                fb_photo_id = publish.schedule_facebook_photo(
+                    page_id, page_token, os.path.join(HERE, image_path), caption,
+                    scheduled_publish_time=int(image_time.timestamp()),
+                )
+                state["fb_photo"] = "scheduled"
+                state["fb_photo_id"] = fb_photo_id
+                print(f"    FB photo scheduled -- {fb_photo_id}")
+                time.sleep(RATE_LIMIT_DELAY)
+            except RuntimeError as e:
+                print(f"    FB photo scheduling FAILED, pausing FB attempts for this run: {e}")
+                fb_rate_limited = True
 
-        if in_window and state.get("fb_reel") != "scheduled":
-            fb_reel_id = publish.schedule_facebook_reel(
-                page_id, page_token, os.path.join(HERE, video_path), caption,
-                scheduled_publish_time=int(reel_time.timestamp()),
-            )
-            state["fb_reel"] = "scheduled"
-            state["fb_reel_id"] = fb_reel_id
-            print(f"    FB reel scheduled -- {fb_reel_id}")
+        if not fb_rate_limited and in_window and state.get("fb_reel") != "scheduled":
+            try:
+                fb_reel_id = publish.schedule_facebook_reel(
+                    page_id, page_token, os.path.join(HERE, video_path), caption,
+                    scheduled_publish_time=int(reel_time.timestamp()),
+                )
+                state["fb_reel"] = "scheduled"
+                state["fb_reel_id"] = fb_reel_id
+                print(f"    FB reel scheduled -- {fb_reel_id}")
+                time.sleep(RATE_LIMIT_DELAY)
+            except RuntimeError as e:
+                print(f"    FB reel scheduling FAILED, pausing FB attempts for this run: {e}")
+                fb_rate_limited = True
 
         fb_state[str(num)] = state
 
