@@ -1,0 +1,86 @@
+name: Healing Frames Runner
+
+# Facebook feed posts are scheduled server-side by schedule.py and need no
+# runner. Instagram feed (photo + reel) and both Stories have no scheduling
+# on Meta's side, so this fires whatever is due, every 15 minutes -- fully
+# independent of whether the local PC is on.
+#
+# Sparse-checkout keeps each run cheap: only queue.json + scripts are pulled
+# up front, then only the specific video/image file(s) actually due this run
+# get added and materialized -- never the full ~1.5GB videos/ folder.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            state/queue.json
+            publish.py
+            runner.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Sparse-checkout only the files due this run
+        run: |
+          python - <<'EOF'
+          import json
+          from datetime import datetime, timezone
+
+          with open("state/queue.json") as f:
+              queue = json.load(f)
+
+          now = datetime.now(timezone.utc)
+          due_paths = []
+          for e in queue:
+              if e.get("published"):
+                  continue
+              if datetime.fromisoformat(e["due_time"]) > now:
+                  continue
+              if e["type"] == "ig_reel":
+                  due_paths.append(e["video_path"])
+              elif e["type"] == "fb_story":
+                  due_paths.append(e["image_path"])
+
+          with open("due_paths.txt", "w") as f:
+              f.write("\n".join(due_paths))
+          print("due this run:", due_paths)
+          EOF
+
+      - name: Add due files to sparse-checkout
+        run: |
+          if [ -s due_paths.txt ]; then
+            git sparse-checkout add $(cat due_paths.txt | tr '\n' ' ')
+          fi
+
+      - name: Publish due posts
+        env:
+          HEALINGFRAMES_PAGE_ID: ${{ secrets.HEALINGFRAMES_PAGE_ID }}
+          HEALINGFRAMES_PAGE_TOKEN: ${{ secrets.HEALINGFRAMES_PAGE_TOKEN }}
+          HEALINGFRAMES_IG_USER_ID: ${{ secrets.HEALINGFRAMES_IG_USER_ID }}
+        run: python runner.py
+
+      - name: Commit updated queue state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- state/queue.json; then
+            git add state/queue.json
+            git commit -m "Update Healing Frames publish queue [skip ci]"
+            git push
+          fi
