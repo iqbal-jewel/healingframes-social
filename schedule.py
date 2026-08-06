@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 NARRATION_PATH = os.path.join(HERE, "narration.json")
 QUEUE_PATH = os.path.join(HERE, "state", "queue.json")
 FB_STATE_PATH = os.path.join(HERE, "state", "fb_state.json")
+PLAN_PATH = os.path.join(HERE, "state", "plan.json")  # pins the day-1 anchor date across re-runs
 IMAGES_RAW_BASE = "https://raw.githubusercontent.com/iqbal-jewel/healingframes-social/main/images"
 
 
@@ -87,7 +88,22 @@ def main():
     tz = ZoneInfo(args.timezone)
     now = datetime.now(tz)
     post_time = dtime.fromisoformat(args.time)
-    start_date = (now + timedelta(days=1)).date() if args.start_tomorrow else now.date()
+
+    # The day-1 anchor is pinned on first run and reused on every subsequent
+    # run (e.g. the daily top-up job) -- otherwise "start tomorrow" would
+    # shift the whole 100-day mapping every time this script runs on a
+    # different day.
+    plan = _load_json(PLAN_PATH, None)
+    if plan is None:
+        start_date = (now + timedelta(days=1)).date() if args.start_tomorrow else now.date()
+        plan = {"start_date": start_date.isoformat(), "time": args.time, "timezone": args.timezone}
+        if args.live:
+            _save_json(PLAN_PATH, plan)
+    else:
+        start_date = datetime.fromisoformat(plan["start_date"]).date()
+        post_time = dtime.fromisoformat(plan["time"])
+        tz = ZoneInfo(plan["timezone"])
+        now = datetime.now(tz)
 
     with open(NARRATION_PATH, encoding="utf-8") as f:
         narration = json.load(f)

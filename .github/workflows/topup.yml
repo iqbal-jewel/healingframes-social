@@ -1,0 +1,103 @@
+name: Healing Frames FB Top-up
+
+# Facebook only allows scheduling 10min-29 days out, so for a 100-day plan
+# this has to run periodically to "top up" newly-in-window days -- and to
+# retry any day that failed earlier (e.g. Meta's spam/rate-limit throttle
+# after a burst of scheduling calls). Runs once/day; schedule.py itself is
+# idempotent (state/fb_state.json + state/plan.json track what's already
+# done), so re-running it is always safe.
+#
+# Sparse-checkout keeps this cheap: only the files for days that are both
+# newly in-window AND not yet fully scheduled get pulled -- never the full
+# ~1.7GB repo.
+
+on:
+  schedule:
+    - cron: "0 12 * * *"   # once/day, well clear of any post time in any US zone
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  topup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            state/queue.json
+            state/fb_state.json
+            state/plan.json
+            narration.json
+            publish.py
+            schedule.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Determine which days need their video/image fetched
+        run: |
+          python - <<'EOF'
+          import json
+          from datetime import datetime, timedelta, time as dtime
+          from zoneinfo import ZoneInfo
+
+          with open("state/plan.json") as f:
+              plan = json.load(f)
+          with open("state/fb_state.json") as f:
+              fb_state = json.load(f)
+          with open("narration.json") as f:
+              narration = json.load(f)
+
+          tz = ZoneInfo(plan["timezone"])
+          now = datetime.now(tz)
+          post_time = dtime.fromisoformat(plan["time"])
+          start_date = datetime.fromisoformat(plan["start_date"]).date()
+          min_time = now + timedelta(minutes=20)
+          max_time = now + timedelta(days=29)
+
+          nums = sorted(int(k) for k in narration.keys())
+          due_paths = []
+          for i, num in enumerate(nums):
+              reel_time = datetime.combine(start_date + timedelta(days=i), post_time, tzinfo=tz)
+              if not (min_time <= reel_time <= max_time):
+                  continue
+              state = fb_state.get(str(num), {})
+              if state.get("fb_photo") != "scheduled":
+                  due_paths.append(f"images/Image_{num:02d}.*")
+              if state.get("fb_reel") != "scheduled":
+                  due_paths.append(f"videos/HealingFrames_{num:02d}_final.mp4")
+
+          with open("due_paths.txt", "w") as f:
+              f.write("\n".join(due_paths))
+          print("needed this run:", due_paths)
+          EOF
+
+      - name: Add needed files to sparse-checkout
+        run: |
+          if [ -s due_paths.txt ]; then
+            git sparse-checkout add $(cat due_paths.txt | tr '\n' ' ')
+          fi
+
+      - name: Top up Facebook scheduling
+        env:
+          HEALINGFRAMES_PAGE_ID: ${{ secrets.HEALINGFRAMES_PAGE_ID }}
+          HEALINGFRAMES_PAGE_TOKEN: ${{ secrets.HEALINGFRAMES_PAGE_TOKEN }}
+          HEALINGFRAMES_IG_USER_ID: ${{ secrets.HEALINGFRAMES_IG_USER_ID }}
+        run: python schedule.py --live
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- state/fb_state.json state/queue.json; then
+            git add state/fb_state.json state/queue.json
+            git commit -m "Top up Healing Frames FB scheduling [skip ci]"
+            git push
+          fi
