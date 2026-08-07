@@ -23,11 +23,13 @@ HASHTAGS = (
     "#healingframes #cozyvibes #slowliving #calmcontent "
     "#naturesoothes #quietmoments #eveningstillness #lofiaesthetic"
 )
-CTA = "✨ Love this scene? Get all 100 as HD wallpapers — link in bio"
+# Wallpaper-pack CTA is deferred until ~30-40 reels are published and we've
+# seen how the page grows organically first -- add it back to with_hashtags()
+# (and re-run the caption patch on already-scheduled FB posts) when ready.
 
 
 def with_hashtags(text: str) -> str:
-    return f"{text}\n\n{CTA}\n\n{HASHTAGS}"
+    return f"{text}\n\n{HASHTAGS}"
 
 
 # --------------------------------------------------------------------------

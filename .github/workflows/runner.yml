@@ -1,13 +1,14 @@
 name: Healing Frames Runner
 
-# Facebook feed posts are scheduled server-side by schedule.py and need no
-# runner. Instagram feed (photo + reel) and both Stories have no scheduling
-# on Meta's side, so this fires whatever is due, every 15 minutes -- fully
-# independent of whether the local PC is on.
+# Reels only for now (no teaser image/Stories -- see schedule.py). Facebook
+# feed reels are scheduled server-side by schedule.py and need no runner.
+# Instagram feed reel has no scheduling on Meta's side, so this fires
+# whatever is due, every 15 minutes -- fully independent of whether the
+# local PC is on.
 #
 # Sparse-checkout keeps each run cheap: only queue.json + scripts are pulled
-# up front, then only the specific video/image file(s) actually due this run
-# get added and materialized -- never the full ~1.5GB videos/ folder.
+# up front, then only the specific video file actually due this run gets
+# added and materialized -- never the full ~1.5GB videos/ folder.
 
 on:
   schedule:
@@ -54,8 +55,6 @@ jobs:
                   continue
               if e["type"] == "ig_reel":
                   due_paths.append(e["video_path"])
-              elif e["type"] == "fb_story":
-                  due_paths.append(e["image_path"])
 
           with open("due_paths.txt", "w") as f:
               f.write("\n".join(due_paths))

@@ -1,18 +1,18 @@
-"""Build the Healing Frames posting plan: 1 reel/day + teaser image 1h before,
-posted to Facebook feed, Instagram feed, Facebook Story, and Instagram Story.
+"""Build the Healing Frames posting plan: 1 reel/day, Facebook + Instagram.
 
-Facebook feed (photo + reel) is scheduled server-side directly from here --
-Meta fires it even if every machine is off. Meta only allows scheduling 10min
-to 29 days out, so for a 100-day calendar this must be re-run periodically
-(daily) to "top up" newly-in-window days; already-scheduled days are skipped.
+No teaser image or Stories for now -- reels only, until ~30-40 are published
+and we've seen how the page grows organically. The wallpaper-pack CTA/funnel
+is deferred until then too (see publish.py).
 
-Instagram feed (photo + reel) and both Stories have no scheduling at all on
-Meta's side -- runner.py has to fire them at the moment they're due. Those
-four go into state/queue.json for runner.py (run every 15-30 min, locally or
-via the GitHub Actions cron in this repo) to publish when due.
+Facebook feed reel is scheduled server-side directly from here -- Meta fires
+it even if every machine is off. Meta only allows scheduling 10min to 29 days
+out, so for a 100-day calendar this must be re-run periodically (daily) to
+"top up" newly-in-window days; already-scheduled days are skipped.
 
-Images are already committed to this repo's images/ folder, so their public
-URL (for IG feed + IG Story) is static -- no per-day git push needed.
+Instagram feed reel has no scheduling at all on Meta's side -- runner.py has
+to fire it at the moment it's due. It goes into state/queue.json for
+runner.py (run every 15-30 min, locally or via the GitHub Actions cron in
+this repo) to publish when due.
 
 Dry run (default) prints the plan only. Pass --live to actually schedule on
 Facebook and write/update queue.json + fb_state.json.
@@ -33,7 +33,6 @@ NARRATION_PATH = os.path.join(HERE, "narration.json")
 QUEUE_PATH = os.path.join(HERE, "state", "queue.json")
 FB_STATE_PATH = os.path.join(HERE, "state", "fb_state.json")
 PLAN_PATH = os.path.join(HERE, "state", "plan.json")  # pins the day-1 anchor date across re-runs
-IMAGES_RAW_BASE = "https://raw.githubusercontent.com/iqbal-jewel/healingframes-social/main/images"
 
 
 def _load_json(path, default):
@@ -47,13 +46,6 @@ def _save_json(path, data):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def find_image_ext(num):
-    for ext in ("jpg", "jpeg", "png"):
-        if os.path.exists(os.path.join(HERE, "images", f"Image_{num:02d}.{ext}")):
-            return ext
-    return None
 
 
 def load_env():
@@ -122,42 +114,27 @@ def main():
 
     for i, num in enumerate(nums):
         reel_time = datetime.combine(start_date + timedelta(days=i), post_time, tzinfo=tz)
-        image_time = reel_time - timedelta(hours=1)
         caption = publish.with_hashtags(narration[str(num)])
-        ext = find_image_ext(num)
-        image_path = f"images/Image_{num:02d}.{ext}" if ext else None          # relative, repo-root
-        image_url = f"{IMAGES_RAW_BASE}/Image_{num:02d}.{ext}" if ext else None
-        video_path = f"videos/HealingFrames_{num:02d}_final.mp4"                # relative, repo-root
+        video_path = f"videos/HealingFrames_{num:02d}_final.mp4"  # relative, repo-root
 
         in_window = min_time <= reel_time <= max_time
         tag = "" if in_window else "  (outside 29-day FB window, will schedule on a later run)"
-        print(f"  day {i+1}: [img+story] {image_time.strftime('%Y-%m-%d %H:%M %Z')}  "
-              f"[reel] {reel_time.strftime('%Y-%m-%d %H:%M %Z')}  -- #{num}{tag}")
+        print(f"  day {i+1}: [reel] {reel_time.strftime('%Y-%m-%d %H:%M %Z')}  -- #{num}{tag}")
 
         if not args.live:
             continue
 
         state = fb_state.get(str(num), {})
 
-        # Facebook feed -- schedule server-side, only once, only within window.
-        # If Meta's spam throttle kicks in mid-run, stop attempting FB calls for
-        # the rest of *this* run (retry on the next run) but keep building the
-        # IG/Story queue below for every remaining day regardless -- that part
-        # never touches the FB API and isn't subject to this throttle.
-        if not fb_rate_limited and in_window and state.get("fb_photo") != "scheduled" and image_path:
-            try:
-                fb_photo_id = publish.schedule_facebook_photo(
-                    page_id, page_token, os.path.join(HERE, image_path), caption,
-                    scheduled_publish_time=int(image_time.timestamp()),
-                )
-                state["fb_photo"] = "scheduled"
-                state["fb_photo_id"] = fb_photo_id
-                print(f"    FB photo scheduled -- {fb_photo_id}")
-                time.sleep(RATE_LIMIT_DELAY)
-            except RuntimeError as e:
-                print(f"    FB photo scheduling FAILED, pausing FB attempts for this run: {e}")
-                fb_rate_limited = True
-
+        # Reels only for now -- no teaser image, no Stories, on either
+        # platform. The wallpaper-pack CTA and its teaser-image funnel are
+        # deferred until ~30-40 reels are published and we can see how the
+        # page is growing organically first.
+        #
+        # Facebook feed reel -- schedule server-side, only once, only within
+        # window. If Meta's spam throttle kicks in mid-run, stop attempting
+        # FB calls for the rest of *this* run (retry on the next run) but
+        # keep building the IG reel queue below regardless.
         if not fb_rate_limited and in_window and state.get("fb_reel") != "scheduled":
             try:
                 fb_reel_id = publish.schedule_facebook_reel(
@@ -174,20 +151,7 @@ def main():
 
         fb_state[str(num)] = state
 
-        # Instagram feed + both Stories -- no scheduling, queue for runner.py
-        if image_url:
-            if (num, "ig_photo") not in queued_keys:
-                queue.append({"day": i + 1, "num": num, "type": "ig_photo",
-                               "due_time": image_time.isoformat(), "image_url": image_url,
-                               "caption": caption, "published": False})
-            if (num, "ig_story") not in queued_keys:
-                queue.append({"day": i + 1, "num": num, "type": "ig_story",
-                               "due_time": image_time.isoformat(), "image_url": image_url,
-                               "published": False})
-            if (num, "fb_story") not in queued_keys:
-                queue.append({"day": i + 1, "num": num, "type": "fb_story",
-                               "due_time": image_time.isoformat(), "image_path": image_path,
-                               "published": False})
+        # Instagram feed reel -- no scheduling, queue for runner.py
         if (num, "ig_reel") not in queued_keys:
             queue.append({"day": i + 1, "num": num, "type": "ig_reel",
                            "due_time": reel_time.isoformat(), "video_path": video_path,

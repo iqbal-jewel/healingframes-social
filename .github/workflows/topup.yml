@@ -69,8 +69,6 @@ jobs:
               if not (min_time <= reel_time <= max_time):
                   continue
               state = fb_state.get(str(num), {})
-              if state.get("fb_photo") != "scheduled":
-                  due_paths.append(f"images/Image_{num:02d}.*")
               if state.get("fb_reel") != "scheduled":
                   due_paths.append(f"videos/HealingFrames_{num:02d}_final.mp4")
 
